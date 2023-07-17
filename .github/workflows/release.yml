@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    branches:
+      - master
+    types:
+      - completed
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Get previous commit SHA
+        id: get_previous_commit
+        run: |
+          PREVIOUS_COMMIT=$(git rev-list -n 1 HEAD -- package.json)
+          echo "::set-output name=previous_commit::$PREVIOUS_COMMIT"
+
+      - name: Check if version changed and is greater than the previous
+        id: version_check
+        run: |
+          # Compare the current version with the version from the previous commit
+          PREVIOUS_NPM_VERSION=$(git show ${{ steps.get_previous_commit.outputs.previous_commit }}:package.json | jq -r '.version')
+          CURRENT_NPM_VERSION=$(jq -r '.version' package.json)
+          CURRENT_CARGO_VERSION=$(git show ${{ steps.get_previous_commit.outputs.previous_commit }}:Cargo.toml | awk -F '"' '/^version/ {print $2}')
+          if [[ "$CURRENT_NPM_VERSION" != "$CURRENT_CARGO_VERSION" ]]; then # Cargo.toml and package.json versions must match
+            echo "Mismatch: NPM version ($CURRENT_NPM_VERSION) and Cargo.toml version ($CURRENT_CARGO_VERSION)"
+            echo "::set-output name=version_changed::false"
+          else
+            if [[ "$PREVIOUS_NPM_VERSION" ==  "$CURRENT_NPM_VERSION" ]]; then
+              echo "::set-output name=version_changed::"
+            else
+              IFS='.' read -ra PREVIOUS_VERSION_PARTS <<< "$PREVIOUS_NPM_VERSION"
+              IFS='.' read -ra CURRENT_VERSION_PARTS <<< "$CURRENT_NPM_VERSION"
+              VERSION_CHANGED=false
+              for i in "${!PREVIOUS_VERSION_PARTS[@]}"; do
+                if [[ ${CURRENT_VERSION_PARTS[i]} -gt ${PREVIOUS_VERSION_PARTS[i]} ]]; then
+                  VERSION_CHANGED=true
+                  break
+                elif [[ ${CURRENT_VERSION_PARTS[i]} -lt ${PREVIOUS_VERSION_PARTS[i]} ]]; then
+                  break
+                fi
+              done
+
+              echo "::set-output name=version_changed::$VERSION_CHANGED"
+              echo "::set-output name=current_version::${CURRENT_NPM_VERSION}"
+            fi
+          fi
+
+      - name: Display result
+        run: |
+          echo "Version changed: ${{ steps.version_check.outputs.version_changed }}"
+
+      - name: Fail if version is lower
+        if: steps.version_check.outputs.version_changed == 'false'
+        run: exit 1
+
+      - name: Setup Node
+        if: steps.version_check.outputs.version_changed == 'true'
+        uses: actions/setup-node@v3
+        with:
+          node-version: 18
+          registry-url: "https://registry.npmjs.org"
+      - name: Publish to NPM
+        if: steps.version_check.outputs.version_changed == 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{secrets.NPM_TOKEN}}
+        run: npm publish
+
+      - name: Setup Rust
+        if: steps.version_check.outputs.version_changed == 'true'
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+      - name: Publish to Crates.io
+        if: steps.version_check.outputs.version_changed == 'true'
+        uses: katyo/publish-crates@v2
+        with:
+          registry-token: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Tag versions
+        if: steps.version_check.outputs.version_changed == 'true'
+        run: |
+          git checkout master
+          git config user.name github-actions[bot]
+          git config user.email github-actions[bot]@users.noreply.github.com
+          git tag -d "v${{ steps.version_check.outputs.current_version }}" || true
+          git push origin --delete "v${{ steps.version_check.outputs.current_version }}" || true
+          git tag -a "v${{ steps.version_check.outputs.current_version }}" -m "Version ${{ steps.version_check.outputs.current_version }}"
+          git push origin "v${{ steps.version_check.outputs.current_version }}"
