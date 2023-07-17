@@ -30,6 +30,9 @@ jobs:
           PREVIOUS_NPM_VERSION=$(git show ${{ steps.get_previous_commit.outputs.previous_commit }}:package.json | jq -r '.version')
           CURRENT_NPM_VERSION=$(jq -r '.version' package.json)
           CURRENT_CARGO_VERSION=$(git show ${{ steps.get_previous_commit.outputs.previous_commit }}:Cargo.toml | awk -F '"' '/^version/ {print $2}')
+          echo "PREVIOUS_NPM_VERSION: $PREVIOUS_NPM_VERSION"
+          echo "CURRENT_NPM_VERSION: $CURRENT_NPM_VERSION"
+          echo "CURRENT_CARGO_VERSION: $CURRENT_CARGO_VERSION"
           if [[ "$CURRENT_NPM_VERSION" != "$CURRENT_CARGO_VERSION" ]]; then # Cargo.toml and package.json versions must match
             echo "Mismatch: NPM version ($CURRENT_NPM_VERSION) and Cargo.toml version ($CURRENT_CARGO_VERSION)"
             echo "::set-output name=version_changed::false"
